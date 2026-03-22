@@ -1,2 +1,2 @@
-logs/*
-!logs/.gitkeep
+logs/
+*.log
