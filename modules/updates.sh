@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+# updates.sh — konfiguracja automatycznych aktualizacji
 
 setup_updates() {
-	log "INFO" "Setting up automatic updates..."
+    log "INFO" "Setting up automatic updates..."
 
-	ensure_package unattended-upgrades
-	run dpkg-reconfigure -f noninteractive unattended-upgrades
+    ensure_package unattended-upgrades
+    run dpkg-reconfigure -f noninteractive unattended-upgrades
 
-	log "INFO" "Automatic updates configured"
+    log "INFO" "Automatic updates configured"
 }

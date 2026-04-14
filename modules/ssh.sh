@@ -1,67 +1,93 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
 
-SSH_DIR="/etc/ssh/sshd_config.d"
-HARDEN_FILE="${SSH_DIR}/99-hardening.conf"
+readonly SSH_DIR="/etc/ssh/sshd_config.d"
+readonly HARDEN_FILE="${SSH_DIR}/99-hardening.conf"
 
-ensure_sshd_dir() {
-	run mkdir -p "$SSH_DIR"
+_ensure_sshd_dir() {
+    if [[ ! -d "$SSH_DIR" ]]; then
+        run mkdir -p "$SSH_DIR"
+        register_rollback "_rollback_sshd_dir"
+    fi
 }
 
-write_sshd_config() {
-	local password_auth="$1"
-	local tmp_file
+_write_sshd_config() {
+    local password_auth="$1"
+    local permit_root
 
-	tmp_file=$(mktemp)
+    [[ "$DISABLE_ROOT_LOGIN" == "yes" ]] && permit_root="no" || permit_root="yes"
 
-	cat > "$tmp_file" <<EOF
+    local tmp_file
+    tmp_file=$(mktemp)
+
+    cat > "$tmp_file" <<EOF
 Port ${SSH_PORT}
-PermitRootLogin no
+PermitRootLogin ${permit_root}
 PasswordAuthentication ${password_auth}
 EOF
 
-	if [[ -f "$HARDEN_FILE" ]] && cmp -s "$tmp_file" "$HARDEN_FILE"; then
-		log "INFO" "SSH config already up to date"
-		rm -f "$tmp_file"
-		return
-	fi
+    if [[ -f "$HARDEN_FILE" ]] && cmp -s "$tmp_file" "$HARDEN_FILE"; then
+        log "INFO" "SSH config already up to date"
+        rm -f "$tmp_file"
+        return
+    fi
 
-	run mv "$tmp_file" "$HARDEN_FILE"
+    if [[ -f "$HARDEN_FILE" ]]; then
+        run cp "$HARDEN_FILE" "${HARDEN_FILE}.bak"
+        register_rollback "_rollback_sshd_config_restore"
+    else
+        register_rollback "_rollback_sshd_config_remove"
+    fi
+
+    run mv "$tmp_file" "$HARDEN_FILE"
+    run chmod 600 "$HARDEN_FILE"
 }
 
-validate_sshd() {
-	command -v sshd >/dev/null || die "sshd not found"
-	sshd -t || die "Invalid SSH configuration"
+_validate_sshd() {
+    command -v sshd >/dev/null || die "sshd not found"
+    sshd -t || die "Invalid SSH configuration"
 }
 
-restart_ssh_safe() {
-	run systemctl restart ssh
+_restart_ssh_safe() {
+    register_rollback "_rollback_sshd_restart"
+    run systemctl restart ssh
 
-	systemctl is-active --quiet ssh || \
-		die "SSH failed to restart"
+    systemctl is-active --quiet ssh || die "SSH failed to restart"
 }
 
 configure_ssh() {
-	log "INFO" "Configuring SSH..."
+    log "INFO" "Configuring SSH..."
 
-	validate_port "$SSH_PORT"
-	ensure_sshd_dir
+    _ensure_sshd_dir
 
-	write_sshd_config "yes"
-	validate_sshd
-	restart_ssh_safe
+    if [[ "$DISABLE_PASSWORD_AUTH" == "yes" ]]; then
+        check_ssh_keys_exist
+        confirm_dangerous_action "Disabling password authentication"
+        _write_sshd_config "no"
+        log "INFO" "Password authentication will be disabled"
+    else
+        _write_sshd_config "yes"
+        log "INFO" "Password authentication left enabled"
+    fi
 
-	if [[ "$DISABLE_PASSWORD_AUTH" != "yes" ]]; then
-		log "INFO" "Password authentication left enabled (default)"
-		return
-	fi
+    _validate_sshd
+    _restart_ssh_safe
 
-	check_ssh_keys_exist
-	confirm_dangerous_action "Disabling password authentication"
+    log "INFO" "SSH configured"
+}
 
-	write_sshd_config "no"
-	validate_sshd
-	restart_ssh_safe
+_rollback_sshd_dir() {
+    run rm -rf "$SSH_DIR"
+}
 
-	log "INFO" "Password authentication disabled safely"
+_rollback_sshd_config_restore() {
+    run mv "${HARDEN_FILE}.bak" "$HARDEN_FILE"
+}
+
+_rollback_sshd_config_remove() {
+    run rm -f "$HARDEN_FILE"
+}
+
+_rollback_sshd_restart() {
+    log "WARN" "Attempting SSH service rollback..."
+    run systemctl restart ssh
 }
